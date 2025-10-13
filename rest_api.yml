@@ -1,0 +1,579 @@
+openapi: 3.0.3
+info:
+  title: Social Travel API
+  version: "1.0.0"
+  description: |
+    API социальной сети путешественников (RU).
+    Пользователи из СНГ, веб и мобильные клиенты.
+    Базовый префикс: /api/v1
+    Пагинация — limit/offset.
+
+servers:
+  - url: /api/v1
+
+tags:
+  - name: Media
+    description: Загрузка медиа через pre-signed URL
+  - name: Posts
+    description: Посты и их получение
+  - name: Ratings
+    description: Оценки постов (1..5)
+  - name: Comments
+    description: Комментарии к постам (плоский список)
+  - name: Feeds
+    description: Ленты (home, по тегу)
+  - name: Follows
+    description: Подписки на пользователей
+  - name: Tags
+    description: Популярные теги
+
+paths:
+  /media/uploads:
+    post:
+      tags: [Media]
+      summary: Создать pre-signed URL для загрузки фото в хранилище
+      description: Клиент запрашивает URL(ы) для прямой загрузки в S3/совместимое хранилище.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MediaUploadRequest'
+            example:
+              files:
+                - filename: "photo1.jpg"
+                  content_type: "image/jpeg"
+                - filename: "photo2.webp"
+                  content_type: "image/webp"
+      responses:
+        '201':
+          description: Созданы pre-signed URL
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MediaUploadResponse'
+              example:
+                uploads:
+                  - filename: "photo1.jpg"
+                    content_type: "image/jpeg"
+                    upload_url: "https://s3.example.com/bucket/key1?signature=..."
+                    file_url: "https://cdn.example.com/bucket/key1"
+                  - filename: "photo2.webp"
+                    content_type: "image/webp"
+                    upload_url: "https://s3.example.com/bucket/key2?signature=..."
+                    file_url: "https://cdn.example.com/bucket/key2"
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /posts:
+    post:
+      tags: [Posts]
+      summary: Создать пост
+      description: Создание поста с описанием, одиночным тегом и массивом URL фотографий (полученных через pre-signed upload).
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PostCreateRequest'
+            example:
+              description: "Первый день в Ереване! Невероятный вид на Арарат."
+              tag: "Yerevan"
+              photos:
+                - "https://cdn.example.com/u123/p1.jpg"
+                - "https://cdn.example.com/u123/p2.jpg"
+                - "https://cdn.example.com/u123/p3.jpg"
+      responses:
+        '201':
+          description: Пост создан
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Post'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /posts/{post_id}/comments:
+    get:
+      tags: [Comments]
+      summary: Получить комментарии поста (плоский список)
+      description: Комментарии не включаются в выдачу фидов и запрашиваются отдельно.
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/PostId'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+      responses:
+        '200':
+          description: Список комментариев
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommentListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      tags: [Comments]
+      summary: Добавить комментарий к посту
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/PostId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CommentCreateRequest'
+            example:
+              text: "Красота! Какие места посоветуешь посетить?"
+      responses:
+        '201':
+          description: Комментарий добавлен
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Comment'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /posts/{post_id}/ratings:
+    post:
+      tags: [Ratings]
+      summary: Поставить/обновить оценку посту (1..5)
+      description: Повторный вызов от того же пользователя обновляет его оценку.
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/PostId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RatingRequest'
+            example:
+              value: 5
+      responses:
+        '200':
+          description: Оценка успешно сохранена
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: ok
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+
+  /feed/home:
+    get:
+      tags: [Feeds]
+      summary: Домашняя лента — посты пользователей, на которых подписан текущий пользователь
+      description: Возвращает посты в обратной хронологии. Комментарии не включаются; их нужно запрашивать отдельно.
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+      responses:
+        '200':
+          description: Список постов
+          headers:
+            Cache-Control:
+              description: Рекомендация кеширования (например, max-age=200)
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PostFeedResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /feed/tags/{tag}:
+    get:
+      tags: [Feeds]
+      summary: Лента постов по тегу
+      description: Посты с указанным тегом в обратной хронологии.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: tag
+          in: path
+          required: true
+          description: Тег (популярное место), строка до 50 символов
+          schema:
+            type: string
+            maxLength: 50
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+      responses:
+        '200':
+          description: Список постов по тегу
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PostFeedResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /tags/popular:
+    get:
+      tags: [Tags]
+      summary: Популярные теги (за всё время)
+      description: Возвращает список популярных тегов (например, топ-50).
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+      responses:
+        '200':
+          description: Список тегов
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TagListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /users/{user_id}/follow:
+    post:
+      tags: [Follows]
+      summary: Подписаться на пользователя
+      description: Повторный вызов — идемпотентен (если уже подписан, ничего не меняется).
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+      responses:
+        '204':
+          description: Подписка активна
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    Limit:
+      name: limit
+      in: query
+      required: false
+      description: Размер страницы (по умолчанию 20, максимум 100)
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+    Offset:
+      name: offset
+      in: query
+      required: false
+      description: Смещение результатов (по умолчанию 0)
+      schema:
+        type: integer
+        minimum: 0
+        default: 0
+    PostId:
+      name: post_id
+      in: path
+      required: true
+      description: UUID поста
+      schema:
+        type: string
+        format: uuid
+    UserId:
+      name: user_id
+      in: path
+      required: true
+      description: UUID пользователя
+      schema:
+        type: string
+        format: uuid
+
+  responses:
+    BadRequest:
+      description: Неверный запрос
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            code: "BAD_REQUEST"
+            message: "Некорректные данные"
+    Unauthorized:
+      description: Требуется аутентификация (передайте Bearer токен)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            code: "UNAUTHORIZED"
+            message: "Недействительный или отсутствующий токен"
+    NotFound:
+      description: Ресурс не найден
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            code: "NOT_FOUND"
+            message: "Ресурс не найден"
+
+  schemas:
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          description: Короткий код ошибки
+        message:
+          type: string
+          description: Сообщение об ошибке
+
+    UserSnippet:
+      type: object
+      required: [id, full_name]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: UUID пользователя
+        full_name:
+          type: string
+          description: Полное имя пользователя
+        avatar_url:
+          type: string
+          format: uri
+          nullable: true
+          description: URL аватара (если есть)
+
+    PostCreateRequest:
+      type: object
+      required: [description, tag, photos]
+      properties:
+        description:
+          type: string
+          maxLength: 700
+          description: Текст описания поста (до 700 символов)
+        tag:
+          type: string
+          maxLength: 50
+          description: Один тег (популярное место)
+        photos:
+          type: array
+          description: Массив URL загруженных фото (до 3 штук)
+          minItems: 1
+          maxItems: 3
+          items:
+            type: string
+            format: uri
+
+    Post:
+      type: object
+      required:
+        - id
+        - user_id
+        - user_full_name
+        - description
+        - tag
+        - photos
+        - created_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+          format: uuid
+          description: UUID автора поста
+        user_full_name:
+          type: string
+          description: Полное имя автора поста
+        description:
+          type: string
+          maxLength: 700
+        tag:
+          type: string
+          maxLength: 50
+        photos:
+          type: array
+          description: URLы фотографий
+          items:
+            type: string
+            format: uri
+        created_at:
+          type: string
+          format: date-time
+          description: Время создания в UTC
+
+    PostFeedResponse:
+      type: object
+      required: [items, limit, offset]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Post'
+        limit:
+          type: integer
+        offset:
+          type: integer
+        total:
+          type: integer
+          nullable: true
+          description: Может быть не вычислено для производительности
+
+    RatingRequest:
+      type: object
+      required: [value]
+      properties:
+        value:
+          type: integer
+          minimum: 1
+          maximum: 5
+          description: Оценка поста
+
+    CommentCreateRequest:
+      type: object
+      required: [text]
+      properties:
+        text:
+          type: string
+          maxLength: 500
+          description: Текст комментария (до 500 символов)
+
+    Comment:
+      type: object
+      required: [id, post_id, user, text, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        post_id:
+          type: string
+          format: uuid
+        user:
+          $ref: '#/components/schemas/UserSnippet'
+        text:
+          type: string
+          maxLength: 500
+        created_at:
+          type: string
+          format: date-time
+
+    CommentListResponse:
+      type: object
+      required: [items, limit, offset]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Comment'
+        limit:
+          type: integer
+        offset:
+          type: integer
+        total:
+          type: integer
+          nullable: true
+
+    MediaUploadRequest:
+      type: object
+      required: [files]
+      properties:
+        files:
+          type: array
+          minItems: 1
+          maxItems: 3
+          description: Запрашиваемые файлы для загрузки
+          items:
+            type: object
+            required: [filename, content_type]
+            properties:
+              filename:
+                type: string
+              content_type:
+                type: string
+                description: MIME-тип (например image/jpeg)
+
+    MediaUploadResponse:
+      type: object
+      required: [uploads]
+      properties:
+        uploads:
+          type: array
+          items:
+            type: object
+            required: [filename, content_type, upload_url, file_url]
+            properties:
+              filename:
+                type: string
+              content_type:
+                type: string
+              upload_url:
+                type: string
+                format: uri
+                description: Pre-signed URL для PUT/POST загрузки
+              file_url:
+                type: string
+                format: uri
+                description: Публичный/CDN URL для последующего использования в посте
+
+    TagListResponse:
+      type: object
+      required: [items, limit, offset]
+      properties:
+        items:
+          type: array
+          items:
+            type: object
+            required: [tag, posts_count]
+            properties:
+              tag:
+                type: string
+                maxLength: 50
+              posts_count:
+                type: integer
+        limit:
+          type: integer
+        offset:
+          type: integer
+        total:
+          type: integer
+          nullable: true
+          description: Общее количество известных тегов (опционально)
+
+security:
+  - BearerAuth: []
