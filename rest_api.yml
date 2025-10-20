@@ -6,7 +6,7 @@ info:
     API социальной сети путешественников (RU).
     Пользователи из СНГ, веб и мобильные клиенты.
     Базовый префикс: /api/v1
-    Пагинация — limit/offset.
+    Пагинация — limit/offset. Формат времени — ISO-8601 UTC.
 
 servers:
   - url: /api/v1
@@ -21,7 +21,7 @@ tags:
   - name: Comments
     description: Комментарии к постам (плоский список)
   - name: Feeds
-    description: Ленты (home, по тегу)
+    description: Унифицированная лента (home / по тегу)
   - name: Follows
     description: Подписки на пользователей
   - name: Tags
@@ -68,6 +68,8 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
 
   /posts:
     post:
@@ -100,6 +102,8 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
 
   /posts/{post_id}/comments:
     get:
@@ -123,6 +127,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
     post:
       tags: [Comments]
       summary: Добавить комментарий к посту
@@ -151,6 +157,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
 
   /posts/{post_id}/ratings:
     post:
@@ -186,18 +194,49 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+    get:
+      tags: [Ratings]
+      summary: Получить список оценок поста (кто какую поставил)
+      description: Возвращает плоский список оценок с информацией о пользователях.
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/PostId'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+      responses:
+        '200':
+          description: Список оценок
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RatingListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
 
-
-  /feed/home:
+  /feed:
     get:
       tags: [Feeds]
-      summary: Домашняя лента — посты пользователей, на которых подписан текущий пользователь
-      description: Возвращает посты в обратной хронологии. Комментарии не включаются; их нужно запрашивать отдельно.
+      summary: Лента постов
+      description: Унифицированная лента. По умолчанию — домашняя; для ленты по тегу передайте параметр `tag`.
       security:
         - BearerAuth: []
       parameters:
         - $ref: '#/components/parameters/Limit'
         - $ref: '#/components/parameters/Offset'
+        - name: tag
+          in: query
+          required: false
+          description: Тег для фильтрации ленты (если указан — вернётся лента по тегу)
+          schema:
+            type: string
+            maxLength: 50
       responses:
         '200':
           description: Список постов
@@ -212,33 +251,8 @@ paths:
                 $ref: '#/components/schemas/PostFeedResponse'
         '401':
           $ref: '#/components/responses/Unauthorized'
-
-  /feed/tags/{tag}:
-    get:
-      tags: [Feeds]
-      summary: Лента постов по тегу
-      description: Посты с указанным тегом в обратной хронологии.
-      security:
-        - BearerAuth: []
-      parameters:
-        - name: tag
-          in: path
-          required: true
-          description: Тег (популярное место), строка до 50 символов
-          schema:
-            type: string
-            maxLength: 50
-        - $ref: '#/components/parameters/Limit'
-        - $ref: '#/components/parameters/Offset'
-      responses:
-        '200':
-          description: Список постов по тегу
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/PostFeedResponse'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
 
   /tags/popular:
     get:
@@ -259,16 +273,24 @@ paths:
                 $ref: '#/components/schemas/TagListResponse'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
 
-  /users/{user_id}/follow:
+  /follows:
     post:
       tags: [Follows]
       summary: Подписаться на пользователя
-      description: Повторный вызов — идемпотентен (если уже подписан, ничего не меняется).
+      description: Создаёт подписку на указанного пользователя. Идемпотентно — повторный вызов не изменяет состояние.
       security:
         - BearerAuth: []
-      parameters:
-        - $ref: '#/components/parameters/UserId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FollowActionRequest'
+            example:
+              target_user_id: "7f1f9c9c-0d7b-4b9d-8b0c-6a1a9c7b2f11"
       responses:
         '204':
           description: Подписка активна
@@ -276,6 +298,33 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /unfollows:
+    post:
+      tags: [Follows]
+      summary: Отписаться от пользователя
+      description: Удаляет подписку на указанного пользователя.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FollowActionRequest'
+            example:
+              target_user_id: "7f1f9c9c-0d7b-4b9d-8b0c-6a1a9c7b2f11"
+      responses:
+        '204':
+          description: Подписка удалена
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
 
 components:
   securitySchemes:
@@ -349,6 +398,15 @@ components:
           example:
             code: "NOT_FOUND"
             message: "Ресурс не найден"
+    InternalServerError:
+      description: Внутренняя ошибка сервера
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            code: "INTERNAL_ERROR"
+            message: "Внутренняя ошибка сервера"
 
   schemas:
     Error:
@@ -465,6 +523,58 @@ components:
           maximum: 5
           description: Оценка поста
 
+    RatingSummary:
+      type: object
+      required: [ratings_count, ratings_avg]
+      properties:
+        ratings_count:
+          type: integer
+          minimum: 0
+        ratings_avg:
+          type: number
+          format: float
+          minimum: 1
+          maximum: 5
+        my_rating:
+          type: integer
+          minimum: 1
+          maximum: 5
+          nullable: true
+          description: Оценка текущего пользователя (если ставил)
+
+    RatingListItem:
+      type: object
+      required: [user, value, created_at]
+      properties:
+        user:
+          $ref: '#/components/schemas/UserSnippet'
+        value:
+          type: integer
+          minimum: 1
+          maximum: 5
+          description: Оценка, выставленная пользователем
+        created_at:
+          type: string
+          format: date-time
+          description: Время, когда была поставлена оценка (UTC)
+
+    RatingListResponse:
+      type: object
+      required: [items, limit, offset]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/RatingListItem'
+        limit:
+          type: integer
+        offset:
+          type: integer
+        total:
+          type: integer
+          nullable: true
+          description: Общее количество оценок (может не возвращаться для производительности)
+
     CommentCreateRequest:
       type: object
       required: [text]
@@ -550,6 +660,15 @@ components:
                 type: string
                 format: uri
                 description: Публичный/CDN URL для последующего использования в посте
+
+    FollowActionRequest:
+      type: object
+      required: [target_user_id]
+      properties:
+        target_user_id:
+          type: string
+          format: uuid
+          description: UUID пользователя, на которого подписываемся или отписываемся
 
     TagListResponse:
       type: object
